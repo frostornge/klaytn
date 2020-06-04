@@ -1,4 +1,3 @@
-// Modifications Copyright 2018 The klaytn Authors
 // Copyright 2016 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
@@ -14,17 +13,15 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-//
-// This file is derived from accounts/abi/pack.go (2018/06/04).
-// Modified and improved for the klaytn development.
 
 package abi
 
 import (
-	"github.com/klaytn/klaytn/common"
-	"github.com/klaytn/klaytn/common/math"
 	"math/big"
 	"reflect"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/math"
 )
 
 // packBytesSlice packs the given bytes as [L, V] as the canonical representation
@@ -72,11 +69,11 @@ func packElement(t Type, reflectValue reflect.Value) []byte {
 func packNum(value reflect.Value) []byte {
 	switch kind := value.Kind(); kind {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return U256(new(big.Int).SetUint64(value.Uint()))
+		return math.U256Bytes(new(big.Int).SetUint64(value.Uint()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return U256(big.NewInt(value.Int()))
+		return math.U256Bytes(big.NewInt(value.Int()))
 	case reflect.Ptr:
-		return U256(value.Interface().(*big.Int))
+		return math.U256Bytes(new(big.Int).Set(value.Interface().(*big.Int)))
 	default:
 		panic("abi: fatal error")
 	}
