@@ -20,8 +20,8 @@ import (
 	"math/big"
 	"reflect"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/math"
+	"github.com/klaytn/klaytn/common"
+	"github.com/klaytn/klaytn/common/math"
 )
 
 // packBytesSlice packs the given bytes as [L, V] as the canonical representation
@@ -69,11 +69,11 @@ func packElement(t Type, reflectValue reflect.Value) []byte {
 func packNum(value reflect.Value) []byte {
 	switch kind := value.Kind(); kind {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return math.U256Bytes(new(big.Int).SetUint64(value.Uint()))
+		return math.PaddedBigBytes(math.U256(new(big.Int).SetUint64(value.Uint())), 32)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return math.U256Bytes(big.NewInt(value.Int()))
+		return math.PaddedBigBytes(math.U256(big.NewInt(value.Int())), 32)
 	case reflect.Ptr:
-		return math.U256Bytes(new(big.Int).Set(value.Interface().(*big.Int)))
+		return math.PaddedBigBytes(math.U256(new(big.Int).Set(value.Interface().(*big.Int))), 32)
 	default:
 		panic("abi: fatal error")
 	}

@@ -88,7 +88,7 @@ func Bind(types []string, abis []string, bytecodes []string, runtimebytecodes []
 				}
 			}
 			// Append the methods to the call or transact lists
-			if original.Const {
+			if original.Constant {
 				calls[original.Name] = &tmplMethod{Original: original, Normalized: normalized, Structured: structured(original.Outputs)}
 			} else {
 				transacts[original.Name] = &tmplMethod{Original: original, Normalized: normalized, Structured: structured(original.Outputs)}
