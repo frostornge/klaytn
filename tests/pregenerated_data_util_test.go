@@ -22,6 +22,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"math"
+	"math/big"
+	"os"
+	"path"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
 	"github.com/klaytn/klaytn/blockchain"
 	"github.com/klaytn/klaytn/blockchain/types"
 	"github.com/klaytn/klaytn/blockchain/vm"
@@ -33,17 +43,9 @@ import (
 	"github.com/klaytn/klaytn/params"
 	"github.com/klaytn/klaytn/reward"
 	"github.com/klaytn/klaytn/storage/database"
+	"github.com/klaytn/klaytn/storage/statedb"
 	"github.com/klaytn/klaytn/work"
 	"github.com/syndtr/goleveldb/leveldb/opt"
-	"io/ioutil"
-	"math"
-	"math/big"
-	"os"
-	"path"
-	"strconv"
-	"sync"
-	"testing"
-	"time"
 )
 
 const (
@@ -448,7 +450,7 @@ func genCandidateBadgerDBOptions() (*database.DBConfig, *opt.Options) {
 
 // defaultDBConfig returns default database.DBConfig for pre-generated tests.
 func defaultDBConfig() *database.DBConfig {
-	return &database.DBConfig{Partitioned: true, ParallelDBWrite: true, NumStateTriePartitions: 4}
+	return &database.DBConfig{SingleDB: false, ParallelDBWrite: true, NumStateTrieShards: 4}
 }
 
 // getChainConfig returns chain config from chainDB.
@@ -474,7 +476,14 @@ func defaultCacheConfig() *blockchain.CacheConfig {
 		ArchiveMode:      false,
 		CacheSize:        512,
 		BlockInterval:    blockchain.DefaultBlockInterval,
-		TrieCacheLimit:   4096,
+		TriesInMemory:    blockchain.DefaultTriesInMemory,
+		TrieNodeCacheConfig: statedb.TrieNodeCacheConfig{
+			CacheType:          statedb.CacheTypeLocal,
+			LocalCacheSizeMB:   4096,
+			FastCacheFileDir:   "",
+			RedisEndpoints:     nil,
+			RedisClusterEnable: false,
+		},
 	}
 }
 
@@ -491,7 +500,7 @@ func generateGovernaceDataForTest() *governance.Governance {
 			ProposerPolicy: uint64(istanbul.DefaultConfig.ProposerPolicy),
 			SubGroupSize:   istanbul.DefaultConfig.SubGroupSize,
 		},
-		Governance: governance.GetDefaultGovernanceConfig(params.UseIstanbul),
+		Governance: params.GetDefaultGovernanceConfig(params.UseIstanbul),
 	}, dbm)
 }
 

@@ -10,27 +10,40 @@ aliases:
     tags:
       only: /^v[0-9]+\.[0-9]+\.[0-9]+.*/
     branches:
-      ignore: 
+      ignore:
         - /release\/.*/
         - master
 
 orbs:
   codecov: codecov/codecov@1.0.5
+  docker: circleci/docker@1.0.1
 
 executors:
   test-executor:
     working_directory: /go/src/github.com/klaytn/klaytn
     docker:
-      - image: klaytn/build_base:1.1-go1.14.1-solc0.4.24
+      - image: klaytn/build_base:1.1-go1.14.6-solc0.4.24
   test-others-executor:
     working_directory: /go/src/github.com/klaytn/klaytn
     docker:
-      - image: klaytn/build_base:1.1-go1.14.1-solc0.4.24
-      - image: localstack/localstack:0.10.9
+      - image: klaytn/build_base:1.1-go1.14.6-solc0.4.24
+      - image: localstack/localstack:0.11.5
+      - image: circleci/mysql:5.7
+      - image: circleci/redis:6.0.8-alpine
+      - name: zookeeper
+        image: wurstmeister/zookeeper
+      - name: kafka
+        image: wurstmeister/kafka
+        environment:
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_ADVERTISED_LISTENERS: INSIDE://:9092,OUTSIDE://kafka:9094
+          KAFKA_LISTENERS: INSIDE://:9092,OUTSIDE://kafka:9094
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
   rpm-executor:
     working_directory: /go/src/github.com/klaytn/klaytn
     docker:
-      - image: klaytn/circleci-rpmbuild:1.14.1
+      - image: klaytn/circleci-rpmbuild:1.14.6
   default:
     working_directory: /go/src/github.com/klaytn/klaytn
     docker:
@@ -46,17 +59,17 @@ commands:
       - run:
           name: "Install golang on machine"
           command: |
-            curl -O https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz
-            mkdir $HOME/go1.14.1
-            tar -C $HOME/go1.14.1 -xzf go1.14.1.linux-amd64.tar.gz
+            curl -O https://dl.google.com/go/go1.14.6.linux-amd64.tar.gz
+            mkdir $HOME/go1.14.6
+            tar -C $HOME/go1.14.6 -xzf go1.14.6.linux-amd64.tar.gz
   pre-build:
     description: "before build, set version"
     steps:
-      - run: 
+      - run:
           name: "set variables"
           command: |
             export GOPATH=~/go
-            export PATH=$HOME/go1.14.1/go/bin:$PATH
+            export PATH=$HOME/go1.14.6/go/bin:$PATH
             pat="^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+.*"
 
             if [[ $CIRCLE_TAG =~ $pat ]]; then
@@ -78,8 +91,8 @@ commands:
       - run:
           name: "build new(Cross compile)"
           command: |
-            export GOPATH=~/go 
-            export PATH=$HOME/go1.14.1/go/bin:$PATH
+            export GOPATH=~/go
+            export PATH=$HOME/go1.14.6/go/bin:$PATH
             make << parameters.os-network >>
   upload-repo:
     description: "upload packaging tar.gz"
@@ -92,7 +105,7 @@ commands:
           name: "upload S3 repo"
           command: |
             export GOPATH=~/go
-            export PATH=$HOME/go1.14.1/go/bin:$PATH
+            export PATH=$HOME/go1.14.6/go/bin:$PATH
             KLAYTN_VERSION=$(go run build/rpm/main.go version)
             for item in << parameters.item >>; do aws s3 cp packages/${item}-*.tar.gz s3://$FRONTEND_BUCKET/packages/klaytn/$KLAYTN_VERSION/; done
   rpm-tagging:
@@ -101,13 +114,13 @@ commands:
       - run:
           name: "rpm tagging"
           command: make rpm-all
-      - run: 
+      - run:
           name: "upload S3 repo"
           command: |
             PLATFORM_SUFFIX=$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)
             KLAYTN_VERSION=$(go run build/rpm/main.go version)
 
-            for item in kcn kpn ken kscn kspn ksen kbn kgen homi; 
+            for item in kcn kpn ken kscn kspn ksen kbn kgen homi;
             do
               TARGET_RPM=$(find $item-linux-x86_64/rpmbuild/RPMS/x86_64/ | awk -v pat="$item(d)?-v" '$0~pat')
               aws s3 cp $TARGET_RPM s3://$FRONTEND_BUCKET/packages/rhel/7/prod/
@@ -122,10 +135,10 @@ commands:
               make rpm-baobab-kcn
               make rpm-baobab-kpn
               make rpm-baobab-ken
-      - run: 
+      - run:
           name: "upload S3 repo"
           command: |
-            for item in kcn kpn ken; 
+            for item in kcn kpn ken;
             do
               PLATFORM_SUFFIX=$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)
               TARGET_RPM=$(find $item-linux-x86_64/rpmbuild/RPMS/x86_64/ | awk -v pat="$item(d)?-baobab-v" '$0~pat')
@@ -143,7 +156,7 @@ commands:
   tag-verify:
     steps:
       - run:
-          name: "Verify tag and file verison match"
+          name: "Verify tag and file version match"
           command: |
             echo "tag version is " $CIRCLE_TAG
             KLAYTN_VERSION=$(go run build/rpm/main.go version)
@@ -157,7 +170,7 @@ commands:
   tagger-verify:
     steps:
       - run:
-          name: "Verify tag and file verison match"
+          name: "Verify tag and file version match"
           command: |
               TAGGER=$(git for-each-ref --format='%(tagger)' refs/tags/$CIRCLE_TAG | sed 's/ .*//')
               if [ $TAGGER == 'circleci-klaytn' ]; then
@@ -175,14 +188,14 @@ commands:
               git checkout -b release/${CIRCLE_TAG%-*}
               git push origin release/${CIRCLE_TAG%-*}
       - run:
-          name: "Install hub" 
+          name: "Install hub"
           command: |
               curl -sSLf https://github.com/github/hub/releases/download/v2.12.3/hub-linux-amd64-2.12.3.tgz | \
                 tar zxf - --strip-components=1 -C /tmp && \
                 sudo mv /tmp/bin/hub /usr/local/bin/hub
               type hub
       - run:
-          name: "Create pull request" 
+          name: "Create pull request"
           command: |
               version=$(hub pr list -s open -L 10 -f "%H%n")
               echo $version
@@ -192,6 +205,9 @@ commands:
                 echo "hub pull-request -m "[Master] release/$CIRCLE_TAG QA Signoff" -b $CIRCLE_PROJECT_USERNAME:master -h $CIRCLE_PROJECT_USERNAME:${CIRCLE_TAG%-*}"
                 echo -e "[Master] release/${CIRCLE_TAG%-*} QA Sign-off\n\nThis PR is automatically created by CI to release a new official version of $CIRCLE_PROJECT_REPONAME.\n\nWhen this PR is approved by QA team, a new version will be released." | hub pull-request -b $CIRCLE_PROJECT_USERNAME:master -h $CIRCLE_PROJECT_USERNAME:release/${CIRCLE_TAG%-*} -r $GITHUB_reviewer -l circleci -F-
               fi
+      - run:
+          name: "build announce"
+          command: .circleci/scripts/build_announce.sh
   tagging-delete-branch:
     steps:
       - run:
@@ -213,20 +229,70 @@ commands:
                 git push origin --delete release/$version
               else
                 echo "Need to delete branch manually"
-              fi  
+              fi
+  wait-other-containers-ready:
+    steps:
+      - run:
+          name: "Waiting for MySQL to be ready"
+          command: |
+            for i in `seq 1 10`;
+            do
+              nc -z 127.0.0.1 3306 && echo Success && exit 0
+              echo -n .
+              sleep 1
+            done
+            echo Failed waiting for MySQL && exit 1
+      - run:
+          name: "Waiting for Redis to be ready"
+          command: |
+            for i in `seq 1 10`;
+            do
+              nc -z 127.0.0.1 6379 && echo Success && exit 0
+              echo -n .
+              sleep 1
+            done
+            echo Failed waiting for Redis && exit 1
+      - run:
+          name: "Waiting for zookeeper to be ready"
+          command: |
+            for i in `seq 1 10`;
+            do
+              nc -z zookeeper 2181 && echo Success && exit 0
+              echo -n .
+              sleep 1
+            done
+            echo Failed waiting for zookeeper && exit 1
+      - run:
+          name: "Waiting for Kafka to be ready"
+          command: |
+            for i in `seq 1 10`;
+            do
+              nc -z kafka 9092 && echo Success && exit 0
+              echo -n .
+              sleep 1
+            done
+            echo Failed waiting for Kafka && exit 1
+      - run:
+          name: "Wait until localstack container running"
+          command: |
+            timeout -t 60 sh -c \
+            'until nc -z localhost 4566; do
+              echo "Waiting for Localstack ..."
+              sleep 1
+            done'
   notify-success:
     steps:
       - run:
           name: "notify slack when job success"
           command : |
-            curl --data '{"text": "✅ Job **'$CIRCLE_JOB'** succeeded on **'$CIRCLE_BRANCH''$CIRCLE_TAG'**. Please see '$CIRCLE_BUILD_URL' for details."}' "$SLACK_WEBHOOK_URL"
+            curl --data '{"text": "✅ Job *'$CIRCLE_JOB'* succeeded on *'$CIRCLE_BRANCH''$CIRCLE_TAG'*. Please see '$CIRCLE_BUILD_URL' for details."}' "$SLACK_WEBHOOK_URL"
           when: on_success
   notify-failure:
     steps:
       - run:
           name: "notify slack when job fail"
           command : |
-            curl --data '{"text": "❌ Job **'$CIRCLE_JOB'** failed on **'$CIRCLE_BRANCH'**. Please see '$CIRCLE_BUILD_URL' for details."}' "$SLACK_WEBHOOK_URL"
+            curl --data '{"text": "❌ Job *'$CIRCLE_JOB'* failed on *'$CIRCLE_BRANCH'*. Please see '$CIRCLE_BUILD_URL' for details."}' "$SLACK_WEBHOOK_URL"
           when: on_fail
 
 jobs:
@@ -240,15 +306,25 @@ jobs:
       - run:
           name: "Build"
           command: |
-            export PATH=$HOME/go1.14.1/go/bin:$PATH
+            export PATH=$HOME/go1.14.6/go/bin:$PATH
             make fmt
             make all
 
-  test-datasync:
+  test-linter:
     executor: test-executor
     steps:
       - install-ssh-alpine
       - checkout
+      - run:
+          name: "Run golangci-lint"
+          command: golangci-lint run --new-from-rev=dev --presets complexity,format,performance -v --timeout 10m
+
+  test-datasync:
+    executor: test-others-executor
+    steps:
+      - install-ssh-alpine
+      - checkout
+      - wait-other-containers-ready
       - run:
           name: "Run test datasync"
           command: make test-datasync
@@ -278,22 +354,16 @@ jobs:
     steps:
       - install-ssh-alpine
       - checkout
-      - run:
-          name: "Wait until localstack container running"
-          command: |
-            timeout -t 60 sh -c \
-            'until curl --silent --fail "http://localhost:4572"; do
-              echo "Waiting for Localstack S3 ..."
-              sleep 1
-            done'
+      - wait-other-containers-ready
       - run:
           name: "Run test others"
-          command: make test-others
+          command: |
+            make test-others
 
   pass-tests:
     executor: default
     steps:
-      - run: 
+      - run:
           name: "tests pass!"
           command: echo "tests pass!"
 
@@ -304,11 +374,12 @@ jobs:
       - tagger-verify
 
   coverage:
-    executor: test-executor
+    executor: test-others-executor
     resource_class: xlarge
     steps:
       - install-ssh-alpine
       - checkout
+      - wait-other-containers-ready
       - run:
           shell: /bin/bash
           name: "Run coverage tests"
@@ -405,7 +476,7 @@ jobs:
       - checkout
       - pre-build
       - rpm-tagging-baobab
-      
+
   deploy-rpm-public:
     executor: rpm-executor
     steps:
@@ -441,16 +512,18 @@ workflows:
   version: 2
   build_n_packaging:
     jobs:
-      - build: 
+      - build:
           filters: *filter-version-not-release
-      - test-datasync: 
+      - test-datasync:
           filters: *filter-version-not-release
-      - test-networks: 
+      - test-networks:
           filters: *filter-version-not-release
-      - test-tests: 
+      - test-tests:
           filters: *filter-version-not-release
-      - test-others: 
+      - test-others:
          filters: *filter-version-not-release
+      - test-linter:
+          filters: *filter-version-not-release
       - tagger-verify:
          filters:
             tags:
@@ -458,8 +531,8 @@ workflows:
             branches:
               ignore: /.*/
 
-      - pass-tests: 
-          requires: 
+      - pass-tests:
+          requires:
             - build
             - test-datasync
             - test-networks
@@ -467,12 +540,13 @@ workflows:
             - test-others
             - tag-verify
             - tagger-verify
+            - test-linter
           filters: *filter-version-not-release
-      
+
       - tag-verify:
           filters: *filter-only-version-tag
 
-      - deploy-rpm-public: 
+      - deploy-rpm-public:
           requires:
             - rpm-tagged
             - rpm-tagged-baobab
@@ -480,11 +554,7 @@ workflows:
             - packaging-linux-baobab
             - packaging-darwin
             - packaging-darwin-baobab
-          filters:
-            tags:
-              only: /^v[0-9]+\.[0-9]+\.[0-9]+/
-            branches:
-              ignore: /.*/
+          filters: *filter-only-version-tag
 
       - release-PR:
           requires:
@@ -494,7 +564,7 @@ workflows:
             - packaging-linux-baobab
             - packaging-darwin
             - packaging-darwin-baobab
-          filters: 
+          filters:
             tags:
               only: /^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+.*/
             branches:
@@ -508,7 +578,7 @@ workflows:
           filters: *filter-only-version-tag
           requires:
             - pass-tests
-      - packaging-linux: 
+      - packaging-linux:
           filters: *filter-only-version-tag
           requires:
             - pass-tests
@@ -516,7 +586,7 @@ workflows:
           filters: *filter-only-version-tag
           requires:
             - pass-tests
-      - packaging-darwin: 
+      - packaging-darwin:
           filters: *filter-only-version-tag
           requires:
             - pass-tests
@@ -524,6 +594,19 @@ workflows:
           filters: *filter-only-version-tag
           requires:
             - pass-tests
+
+      - docker/publish:
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+/
+            branches:
+              ignore: /.*/
+          requires:
+            - pass-tests
+          image: klaytn/klaytn
+          tag: $CIRCLE_TAG,latest
+          executor: docker/docker
+          use-remote-docker: true
 
       - major-tagging:
           filters:
@@ -549,3 +632,4 @@ workflows:
               only: dev
     jobs:
       - linters
+

@@ -23,6 +23,11 @@ package cn
 import (
 	"errors"
 	"fmt"
+	"math/big"
+	"os/exec"
+	"runtime"
+	"sync"
+
 	"github.com/klaytn/klaytn"
 	"github.com/klaytn/klaytn/accounts"
 	"github.com/klaytn/klaytn/api"
@@ -30,7 +35,6 @@ import (
 	"github.com/klaytn/klaytn/blockchain/bloombits"
 	"github.com/klaytn/klaytn/blockchain/state"
 	"github.com/klaytn/klaytn/blockchain/types"
-	"github.com/klaytn/klaytn/blockchain/vm"
 	"github.com/klaytn/klaytn/common"
 	"github.com/klaytn/klaytn/common/hexutil"
 	"github.com/klaytn/klaytn/consensus"
@@ -50,10 +54,6 @@ import (
 	"github.com/klaytn/klaytn/ser/rlp"
 	"github.com/klaytn/klaytn/storage/database"
 	"github.com/klaytn/klaytn/work"
-	"math/big"
-	"os/exec"
-	"runtime"
-	"sync"
 )
 
 var errCNLightSync = errors.New("can't run cn.CN in light sync mode")
@@ -64,11 +64,6 @@ type LesServer interface {
 	Stop()
 	Protocols() []p2p.Protocol
 	SetBloomBitsIndexer(bbIndexer *blockchain.ChainIndexer)
-}
-
-type StakingHandler interface {
-	SetStakingManager(manager *reward.StakingManager)
-	GetStakingManager() *reward.StakingManager
 }
 
 //go:generate mockgen -destination=node/cn/mocks/miner_mock.go -package=mocks github.com/klaytn/klaytn/node/cn Miner
@@ -105,9 +100,6 @@ type CN struct {
 	config      *Config
 	chainConfig *params.ChainConfig
 
-	// Channel for shutting down the service
-	shutdownChan chan bool // Channel for shutting down the CN
-
 	// Handlers
 	txPool          work.TxPool
 	blockchain      work.BlockChain
@@ -121,8 +113,9 @@ type CN struct {
 	engine         consensus.Engine
 	accountManager accounts.AccountManager
 
-	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
-	bloomIndexer  *blockchain.ChainIndexer       // Bloom indexer operating during block imports
+	bloomRequests     chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
+	bloomIndexer      *blockchain.ChainIndexer       // Bloom indexer operating during block imports
+	closeBloomHandler chan struct{}
 
 	APIBackend *CNAPIBackend
 
@@ -138,8 +131,7 @@ type CN struct {
 
 	components []interface{}
 
-	governance     *governance.Governance
-	stakingManager *reward.StakingManager
+	governance *governance.Governance
 }
 
 func (s *CN) AddLesServer(ls LesServer) {
@@ -212,7 +204,7 @@ func New(ctx *node.ServiceContext, config *Config) (*CN, error) {
 
 	chainDB := CreateDB(ctx, config, "chaindata")
 
-	chainConfig, genesisHash, genesisErr := blockchain.SetupGenesisBlock(chainDB, config.Genesis, config.NetworkId, config.IsPrivate)
+	chainConfig, genesisHash, genesisErr := blockchain.SetupGenesisBlock(chainDB, config.Genesis, config.NetworkId, config.IsPrivate, false)
 	if _, ok := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !ok {
 		return nil, genesisErr
 	}
@@ -227,19 +219,19 @@ func New(ctx *node.ServiceContext, config *Config) (*CN, error) {
 	governance := governance.NewGovernance(chainConfig, chainDB)
 
 	cn := &CN{
-		config:         config,
-		chainDB:        chainDB,
-		chainConfig:    chainConfig,
-		eventMux:       ctx.EventMux,
-		accountManager: ctx.AccountManager,
-		engine:         CreateConsensusEngine(ctx, config, chainConfig, chainDB, governance, ctx.NodeType()),
-		shutdownChan:   make(chan bool),
-		networkId:      config.NetworkId,
-		gasPrice:       config.GasPrice,
-		rewardbase:     config.Rewardbase,
-		bloomRequests:  make(chan chan *bloombits.Retrieval),
-		bloomIndexer:   NewBloomIndexer(chainDB, params.BloomBitsBlocks),
-		governance:     governance,
+		config:            config,
+		chainDB:           chainDB,
+		chainConfig:       chainConfig,
+		eventMux:          ctx.EventMux,
+		accountManager:    ctx.AccountManager,
+		engine:            CreateConsensusEngine(ctx, config, chainConfig, chainDB, governance, ctx.NodeType()),
+		networkId:         config.NetworkId,
+		gasPrice:          config.GasPrice,
+		rewardbase:        config.Rewardbase,
+		bloomRequests:     make(chan chan *bloombits.Retrieval),
+		bloomIndexer:      NewBloomIndexer(chainDB, params.BloomBitsBlocks),
+		closeBloomHandler: make(chan struct{}),
+		governance:        governance,
 	}
 
 	// istanbul BFT. Derive and set node's address using nodekey
@@ -255,17 +247,19 @@ func New(ctx *node.ServiceContext, config *Config) (*CN, error) {
 		}
 	}
 	var (
-		vmConfig    = vm.Config{EnablePreimageRecording: config.EnablePreimageRecording}
+		vmConfig    = config.getVMConfig()
 		cacheConfig = &blockchain.CacheConfig{StateDBCaching: config.StateDBCaching,
 			ArchiveMode: config.NoPruning, CacheSize: config.TrieCacheSize, BlockInterval: config.TrieBlockInterval,
-			TxPoolStateCache: config.TxPoolStateCache, TrieCacheLimit: config.TrieCacheLimit,
-			SenderTxHashIndexing: config.SenderTxHashIndexing, DataArchivingBlockNum: config.DataArchivingBlockNum}
+			TriesInMemory: config.TriesInMemory, TxPoolStateCache: config.TxPoolStateCache,
+			TrieNodeCacheConfig: config.TrieNodeCacheConfig, SenderTxHashIndexing: config.SenderTxHashIndexing}
 	)
 
 	bc, err := blockchain.NewBlockChain(chainDB, cacheConfig, cn.chainConfig, cn.engine, vmConfig)
 	if err != nil {
 		return nil, err
 	}
+	bc.SetCanonicalBlock(config.StartBlockNumber)
+
 	cn.blockchain = bc
 	governance.SetBlockchain(cn.blockchain)
 	// Synchronize proposerpolicy & useGiniCoeff
@@ -300,7 +294,9 @@ func New(ctx *node.ServiceContext, config *Config) (*CN, error) {
 	// Synchronize unitprice
 	cn.txPool.SetGasPrice(big.NewInt(0).SetUint64(governance.UnitPrice()))
 
-	if cn.protocolManager, err = NewProtocolManager(cn.chainConfig, config.SyncMode, config.NetworkId, cn.eventMux, cn.txPool, cn.engine, cn.blockchain, chainDB, ctx.NodeType(), config); err != nil {
+	// Permit the downloader to use the trie cache allowance during fast sync
+	cacheLimit := cacheConfig.TrieNodeCacheConfig.LocalCacheSizeMB
+	if cn.protocolManager, err = NewProtocolManager(cn.chainConfig, config.SyncMode, config.NetworkId, cn.eventMux, cn.txPool, cn.engine, cn.blockchain, chainDB, cacheLimit, ctx.NodeType(), config); err != nil {
 		return nil, err
 	}
 
@@ -315,24 +311,29 @@ func New(ctx *node.ServiceContext, config *Config) (*CN, error) {
 	}
 
 	if governance.ProposerPolicy() == uint64(istanbul.WeightedRandom) {
-		cn.stakingManager = reward.NewStakingManager(cn.blockchain, governance)
-		if handler, ok := cn.engine.(StakingHandler); ok {
-			handler.SetStakingManager(cn.stakingManager)
-		}
+		// NewStakingManager is called with proper non-nil parameters
+		reward.NewStakingManager(cn.blockchain, governance, cn.chainDB)
 	}
 
-	var restartFn func()
-	if config.AutoRestartFlag {
-		restartFn = func() {
-			daemonPath := config.DaemonPathFlag
-			logger.Warn("Restart node", "command", daemonPath+" restart")
-			cmd := exec.Command(daemonPath, "restart")
-			cmd.Run()
+	// set worker
+	if config.WorkerDisable {
+		// TODO Klaytn: implement auto restart when the fake worker is used
+		cn.miner = work.NewFakeWorker()
+	} else {
+		var restartFn func()
+		if config.AutoRestartFlag {
+			restartFn = func() {
+				daemonPath := config.DaemonPathFlag
+				logger.Warn("Restart node", "command", daemonPath+" restart")
+				cmd := exec.Command(daemonPath, "restart")
+				cmd.Run()
+			}
 		}
+
+		// TODO-Klaytn improve to handle drop transaction on network traffic in PN and EN
+		cn.miner = work.New(cn, cn.chainConfig, cn.EventMux(), cn.engine, ctx.NodeType(), crypto.PubkeyToAddress(ctx.NodeKey().PublicKey), cn.config.TxResendUseLegacy, config.RestartTimeOutFlag, restartFn)
 	}
 
-	// TODO-Klaytn improve to handle drop transaction on network traffic in PN and EN
-	cn.miner = work.New(cn, cn.chainConfig, cn.EventMux(), cn.engine, ctx.NodeType(), crypto.PubkeyToAddress(ctx.NodeKey().PublicKey), cn.config.TxResendUseLegacy, config.RestartTimeOutFlag, restartFn)
 	// istanbul BFT
 	cn.miner.SetExtra(makeExtraData(config.ExtraData))
 
@@ -349,6 +350,12 @@ func New(ctx *node.ServiceContext, config *Config) (*CN, error) {
 	cn.addComponent(cn.blockchain)
 	cn.addComponent(cn.txPool)
 	cn.addComponent(cn.APIs())
+	cn.addComponent(cn.ChainDB())
+
+	// Only for KES nodes
+	if config.TrieNodeCacheConfig.RedisSubscribeBlockEnable {
+		go cn.blockchain.BlockSubscriptionLoop(cn.txPool.(*blockchain.TxPool))
+	}
 
 	return cn, nil
 }
@@ -415,9 +422,9 @@ func makeExtraData(extra []byte) []byte {
 
 // CreateDB creates the chain database.
 func CreateDB(ctx *node.ServiceContext, config *Config, name string) database.DBManager {
-	dbc := &database.DBConfig{Dir: name, DBType: database.LevelDB, ParallelDBWrite: config.ParallelDBWrite, Partitioned: config.PartitionedDB, NumStateTriePartitions: config.NumStateTriePartitions,
+	dbc := &database.DBConfig{Dir: name, DBType: config.DBType, ParallelDBWrite: config.ParallelDBWrite, SingleDB: config.SingleDB, NumStateTrieShards: config.NumStateTrieShards,
 		LevelDBCacheSize: config.LevelDBCacheSize, OpenFilesLimit: database.GetOpenFilesLimit(), LevelDBCompression: config.LevelDBCompression,
-		LevelDBBufferPool: config.LevelDBBufferPool}
+		LevelDBBufferPool: config.LevelDBBufferPool, EnableDBPerfMetrics: config.EnableDBPerfMetrics, DynamoDBConfig: &config.DynamoDBConfig}
 	return ctx.OpenDatabase(dbc)
 }
 
@@ -425,7 +432,7 @@ func CreateDB(ctx *node.ServiceContext, config *Config, name string) database.DB
 func CreateConsensusEngine(ctx *node.ServiceContext, config *Config, chainConfig *params.ChainConfig, db database.DBManager, gov *governance.Governance, nodetype common.ConnType) consensus.Engine {
 	// Only istanbul  BFT is allowed in the main net. PoA is supported by service chain
 	if chainConfig.Governance == nil {
-		chainConfig.Governance = governance.GetDefaultGovernanceConfig(params.UseIstanbul)
+		chainConfig.Governance = params.GetDefaultGovernanceConfig(params.UseIstanbul)
 	}
 	return istanbulBackend.New(config.Rewardbase, &config.Istanbul, ctx.NodeKey(), db, gov, nodetype)
 }
@@ -598,30 +605,30 @@ func (s *CN) Start(srvr p2p.Server) error {
 	if s.lesServer != nil {
 		s.lesServer.Start(srvr)
 	}
-	if s.stakingManager != nil {
-		s.stakingManager.Subscribe()
-	}
+
+	reward.StakingManagerSubscribe()
+
 	return nil
 }
 
 // Stop implements node.Service, terminating all internal goroutines used by the
 // Klaytn protocol.
 func (s *CN) Stop() error {
-	if s.stakingManager != nil {
-		s.stakingManager.Unsubscribe()
-	}
-	s.bloomIndexer.Close()
-	s.blockchain.Stop()
+	// Stop all the peer-related stuff first.
 	s.protocolManager.Stop()
 	if s.lesServer != nil {
 		s.lesServer.Stop()
 	}
+
+	// Then stop everything else.
+	s.bloomIndexer.Close()
+	close(s.closeBloomHandler)
 	s.txPool.Stop()
 	s.miner.Stop()
-	s.eventMux.Stop()
-
+	reward.StakingManagerUnsubscribe()
+	s.blockchain.Stop()
 	s.chainDB.Close()
-	close(s.shutdownChan)
+	s.eventMux.Stop()
 
 	return nil
 }

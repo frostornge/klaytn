@@ -21,11 +21,12 @@
 package statedb
 
 import (
+	"hash"
+	"sync"
+
 	"github.com/klaytn/klaytn/common"
 	"github.com/klaytn/klaytn/crypto/sha3"
 	"github.com/klaytn/klaytn/ser/rlp"
-	"hash"
-	"sync"
 )
 
 type hasher struct {
@@ -277,12 +278,12 @@ func (h *hasher) store(n node, db *Database, force bool) (node, uint16) {
 			switch n := n.(type) {
 			case *shortNode:
 				if child, ok := n.Val.(valueNode); ok {
-					h.onleaf(child, hash)
+					h.onleaf(child, hash, 0)
 				}
 			case *fullNode:
 				for i := 0; i < 16; i++ {
 					if child, ok := n.Children[i].(valueNode); ok {
-						h.onleaf(child, hash)
+						h.onleaf(child, hash, 0)
 					}
 				}
 			}

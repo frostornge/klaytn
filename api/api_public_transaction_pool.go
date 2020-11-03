@@ -29,6 +29,7 @@ import (
 	"github.com/klaytn/klaytn/blockchain/types"
 	"github.com/klaytn/klaytn/common"
 	"github.com/klaytn/klaytn/common/hexutil"
+	"github.com/klaytn/klaytn/crypto"
 	"github.com/klaytn/klaytn/networks/rpc"
 	"github.com/klaytn/klaytn/ser/rlp"
 	"math/big"
@@ -295,10 +296,6 @@ func submitTransaction(ctx context.Context, b Backend, tx *types.Transaction) (c
 	//submitTxCount++
 	//log.Error("### submitTransaction","tx",submitTxCount)
 
-	if tx.Type().IsRPCExcluded() {
-		return common.Hash{}, fmt.Errorf("%s cannot be submitted via RPC!", tx.Type().String())
-	}
-
 	if err := b.SendTx(ctx, tx); err != nil {
 		return common.Hash{}, err
 	}
@@ -395,7 +392,7 @@ func (s *PublicTransactionPoolAPI) Sign(addr common.Address, data hexutil.Bytes)
 	// Sign the requested hash with the wallet
 	signature, err := wallet.SignHash(account, signHash(data))
 	if err == nil {
-		signature[64] += 27 // Transform V from 0/1 to 27/28 according to the yellow paper
+		signature[crypto.RecoveryIDOffset] += 27 // Transform V from 0/1 to 27/28 according to the yellow paper
 	}
 	return signature, err
 }

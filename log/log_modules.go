@@ -19,7 +19,12 @@ package log
 import (
 	"strconv"
 	"strings"
+	"time"
 )
+
+// statsReportLimit is the time limit during working after which we always print
+// out progress. This avoids the user wondering what's going on.
+const StatsReportLimit = 10 * time.Second
 
 type ModuleID int
 
@@ -115,6 +120,8 @@ const (
 
 	// 51~60
 	CMDKSEN
+	ChainDataFetcher
+	KAS
 
 	// ModuleNameLen should be placed at the end of the list.
 	ModuleNameLen
@@ -186,4 +193,6 @@ var moduleNames = [ModuleNameLen]string{
 
 	// 51~60
 	"cmd/ksen",
+	"datasync/chaindatafetcher",
+	"kas",
 }

@@ -18,10 +18,11 @@ package common
 
 import (
 	"errors"
-	"github.com/hashicorp/golang-lru"
+	"math"
+
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/klaytn/klaytn/log"
 	"github.com/pbnjay/memory"
-	"math"
 )
 
 type CacheType int
@@ -54,7 +55,7 @@ var TotalPhysicalMemGB int = getPhysicalMemorySize() // Convert Byte to GByte
 // It internally returns a minimumMemorySize if it is an os that does not support using the system call to obtain it,
 // or if the system call fails.
 func getPhysicalMemorySize() int {
-	TotalMemGB := int(memory.TotalMemory() / 1000 / 1000 / 1000)
+	TotalMemGB := int(memory.TotalMemory() / 1024 / 1024 / 1024)
 	if TotalMemGB >= minimumMemorySize {
 		return TotalMemGB
 	} else {
@@ -66,9 +67,6 @@ func getPhysicalMemorySize() int {
 		return minimumMemorySize
 	}
 }
-
-// TODO-Klaytn-Storage WriteThroughCaching flag should be stored to proper place.
-var WriteThroughCaching = false
 
 type CacheKey interface {
 	getShardIndex(shardMask int) int

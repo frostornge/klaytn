@@ -21,7 +21,15 @@
 package cn
 
 import (
+	"math/big"
+	"os"
+	"os/user"
+	"time"
+
+	"github.com/klaytn/klaytn/storage/statedb"
+
 	"github.com/klaytn/klaytn/blockchain"
+	"github.com/klaytn/klaytn/blockchain/vm"
 	"github.com/klaytn/klaytn/common"
 	"github.com/klaytn/klaytn/common/hexutil"
 	"github.com/klaytn/klaytn/consensus/istanbul"
@@ -30,32 +38,31 @@ import (
 	"github.com/klaytn/klaytn/node/cn/gasprice"
 	"github.com/klaytn/klaytn/params"
 	"github.com/klaytn/klaytn/storage/database"
-	"math/big"
-	"os"
-	"os/user"
-	"time"
 )
 
 var logger = log.NewModuleLogger(log.NodeCN)
 
-// DefaultConfig contains default settings for use on the Klaytn main net.
-var DefaultConfig = Config{
-	SyncMode:          downloader.FullSync,
-	NetworkId:         params.CypressNetworkId,
-	LevelDBCacheSize:  768,
-	TrieCacheSize:     512,
-	TrieTimeout:       5 * time.Minute,
-	TrieBlockInterval: blockchain.DefaultBlockInterval,
-	GasPrice:          big.NewInt(18 * params.Ston),
+// GetDefaultConfig returns default settings for use on the Klaytn main net.
+func GetDefaultConfig() *Config {
+	return &Config{
+		SyncMode:          downloader.FullSync,
+		NetworkId:         params.CypressNetworkId,
+		LevelDBCacheSize:  768,
+		TrieCacheSize:     512,
+		TrieTimeout:       5 * time.Minute,
+		TrieBlockInterval: blockchain.DefaultBlockInterval,
+		TriesInMemory:     blockchain.DefaultTriesInMemory,
+		GasPrice:          big.NewInt(18 * params.Ston),
 
-	TxPool: blockchain.DefaultTxPoolConfig,
-	GPO: gasprice.Config{
-		Blocks:     20,
-		Percentile: 60,
-	},
-	WsEndpoint: "localhost:8546",
+		TxPool: blockchain.DefaultTxPoolConfig,
+		GPO: gasprice.Config{
+			Blocks:     20,
+			Percentile: 60,
+		},
+		WsEndpoint: "localhost:8546",
 
-	Istanbul: *istanbul.DefaultConfig,
+		Istanbul: *istanbul.DefaultConfig,
+	}
 }
 
 func init() {
@@ -75,9 +82,14 @@ type Config struct {
 	Genesis *blockchain.Genesis `toml:",omitempty"`
 
 	// Protocol options
-	NetworkId uint64 // Network ID to use for selecting peers to connect to
-	SyncMode  downloader.SyncMode
-	NoPruning bool
+	NetworkId     uint64 // Network ID to use for selecting peers to connect to
+	SyncMode      downloader.SyncMode
+	NoPruning     bool
+	WorkerDisable bool // disables worker and does not start istanbul
+
+	// KES options
+	DownloaderDisable bool
+	FetcherDisable    bool
 
 	// Service chain options
 	ParentOperatorAddr *common.Address `toml:",omitempty"` // A hex account address in the parent chain used to sign a child chain transaction.
@@ -88,22 +100,28 @@ type Config struct {
 	//LightServ  int `toml:",omitempty"` // Maximum percentage of time allowed for serving LES requests
 	//LightPeers int `toml:",omitempty"` // Maximum number of LES client peers
 
+	OverwriteGenesis bool
+	StartBlockNumber uint64
+
 	// Database options
-	SkipBcVersionCheck     bool `toml:"-"`
-	PartitionedDB          bool
-	NumStateTriePartitions uint
-	LevelDBCompression     database.LevelDBCompressionType
-	LevelDBBufferPool      bool
-	LevelDBCacheSize       int
-	TrieCacheSize          int
-	TrieTimeout            time.Duration
-	TrieBlockInterval      uint
-	SenderTxHashIndexing   bool
-	ParallelDBWrite        bool
-	StateDBCaching         bool
-	TxPoolStateCache       bool
-	TrieCacheLimit         int
-	DataArchivingBlockNum  uint64
+	DBType               database.DBType
+	SkipBcVersionCheck   bool `toml:"-"`
+	SingleDB             bool
+	NumStateTrieShards   uint
+	EnableDBPerfMetrics  bool
+	LevelDBCompression   database.LevelDBCompressionType
+	LevelDBBufferPool    bool
+	LevelDBCacheSize     int
+	DynamoDBConfig       database.DynamoDBConfig
+	TrieCacheSize        int
+	TrieTimeout          time.Duration
+	TrieBlockInterval    uint
+	TriesInMemory        uint64
+	SenderTxHashIndexing bool
+	ParallelDBWrite      bool
+	StateDBCaching       bool
+	TxPoolStateCache     bool
+	TrieNodeCacheConfig  statedb.TrieNodeCacheConfig
 
 	// Mining-related options
 	ServiceChainSigner common.Address `toml:",omitempty"`
@@ -121,6 +139,8 @@ type Config struct {
 
 	// Enables tracking of SHA3 preimages in the VM
 	EnablePreimageRecording bool
+	// Enables collecting internal transaction data during processing a block
+	EnableInternalTxTracing bool
 	// Istanbul options
 	Istanbul istanbul.Config
 
@@ -148,4 +168,11 @@ type Config struct {
 
 type configMarshaling struct {
 	ExtraData hexutil.Bytes
+}
+
+func (c *Config) getVMConfig() vm.Config {
+	return vm.Config{
+		EnablePreimageRecording: c.EnablePreimageRecording,
+		EnableInternalTxTracing: c.EnableInternalTxTracing,
+	}
 }
